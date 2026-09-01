@@ -206,7 +206,8 @@
   .add-preset-actions{display:flex;gap:8px}
   .add-preset-save{flex:1;padding:11px;border-radius:12px;border:none;background:var(--accent);color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;cursor:pointer}
   .add-preset-cancel{padding:11px 16px;border-radius:12px;border:1px solid var(--border);background:transparent;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:14px;cursor:pointer}
-  .preset-error{outline:2px solid var(--expense-fix);border-radius:14px;animation:shake .3s}
+  .period-chip{padding:7px 12px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s}
+  .period-chip.active{background:var(--chip-sel-bg);color:var(--accent);border-color:var(--accent)}
   @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
 
   /* Font modal */
@@ -232,6 +233,7 @@
       <div class="month-nav">
         <button class="month-btn" id="themeBtn" onclick="toggleTheme()">☀️</button>
         <button class="month-btn" onclick="openFontModal()" title="Taille police">𝐀</button>
+        <button class="month-btn" onclick="openSearchModal()" title="Recherche">🔍</button>
         <button class="month-btn" onclick="manualRollover()" title="Reporter les fixes du mois précédent">🔁</button>
         <button class="month-btn" onclick="openBackupModal()" title="Sauvegardes">💾</button>
         <button class="month-btn" onclick="resetMonth()" title="Remettre le mois à zéro" style="color:var(--expense-fix)">🗑️</button>
@@ -1293,6 +1295,117 @@ async function autoBackup(){
 }
 
 /* ══════════════════════════════════════
+   RECHERCHE
+══════════════════════════════════════ */
+let searchPeriod='month';
+
+function openSearchModal(){
+  document.getElementById('searchInput').value='';
+  document.getElementById('searchResults').innerHTML='<div class="empty-state">Saisissez un mot-clé pour rechercher</div>';
+  setSearchPeriod('month');
+  document.getElementById('searchModalOverlay').classList.add('open');
+  setTimeout(()=>document.getElementById('searchInput').focus(),350);
+}
+function closeSearchModal(){document.getElementById('searchModalOverlay').classList.remove('open');}
+
+function setSearchPeriod(p){
+  searchPeriod=p;
+  document.querySelectorAll('.period-chip').forEach(b=>b.classList.remove('active'));
+  document.getElementById('schip-'+p).classList.add('active');
+  const customRow=document.getElementById('customDatesRow');
+  customRow.style.display=p==='custom'?'flex':'none';
+  runSearch();
+}
+
+function getSearchMois(){
+  const now_=new Date();
+  const pad=n=>String(n).padStart(2,'0');
+  const moisStr=(y,m)=>`${y}-${pad(m+1)}`;
+  const cur=moisStr(currentYear,currentMonth);
+
+  if(searchPeriod==='month') return{from:cur,to:cur};
+  if(searchPeriod==='3m'){
+    let m=currentMonth-2,y=currentYear;
+    if(m<0){m+=12;y--;}
+    return{from:moisStr(y,m),to:cur};
+  }
+  if(searchPeriod==='6m'){
+    let m=currentMonth-5,y=currentYear;
+    if(m<0){m+=12;y--;}
+    return{from:moisStr(y,m),to:cur};
+  }
+  if(searchPeriod==='year') return{from:`${now_.getFullYear()}-01`,to:cur};
+  if(searchPeriod==='all') return{from:'2000-01',to:'2099-12'};
+  if(searchPeriod==='custom'){
+    const from=document.getElementById('searchDateFrom').value||'2000-01';
+    const to=document.getElementById('searchDateTo').value||'2099-12';
+    return{from,to};
+  }
+  return{from:cur,to:cur};
+}
+
+async function runSearch(){
+  const query=document.getElementById('searchInput').value.trim();
+  const results=document.getElementById('searchResults');
+  if(!query){
+    results.innerHTML='<div class="empty-state">Saisissez un mot-clé pour rechercher</div>';
+    return;
+  }
+  results.innerHTML='<div class="empty-state">Recherche…</div>';
+  try{
+    const{from,to}=getSearchMois();
+    // Recherche dans name ET detail
+    const rows=await sb(`budget?mois=gte.${from}&mois=lte.${to}&order=mois.desc,created_at.desc`);
+    const q=query.toLowerCase();
+    const matches=rows.filter(r=>
+      (r.name&&r.name.toLowerCase().includes(q))||
+      (r.detail&&r.detail.toLowerCase().includes(q))
+    );
+
+    if(!matches.length){
+      results.innerHTML='<div class="empty-state">Aucun résultat pour "'+esc(query)+'"</div>';
+      return;
+    }
+
+    // Regroupe par entrées / sorties
+    const incomes=matches.filter(r=>r.type==='IF'||r.type==='ID');
+    const expenses=matches.filter(r=>r.type==='EF'||r.type==='ED');
+    const totalInc=incomes.reduce((s,r)=>s+parseFloat(r.amount),0);
+    const totalExp=expenses.reduce((s,r)=>s+parseFloat(r.amount),0);
+
+    function renderGroup(items,color,label,total){
+      if(!items.length)return'';
+      return`<div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:14px;margin-bottom:2px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:var(--muted)">${label}</span>
+          <span style="font-family:'DM Serif Display',serif;font-size:18px;color:${color}">${fmt(total)}</span>
+        </div>
+        ${items.map(r=>{
+          const sub=[r.detail&&esc(r.detail),r.mois&&r.mois.split('-').reverse().join('/')].filter(Boolean).join(' · ');
+          return`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--border)">
+            <span style="font-size:18px">${r.emoji||'💰'}</span>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:14px;font-weight:500;color:var(--text)">${esc(r.name)}</div>
+              ${sub?`<div style="font-size:11px;color:var(--muted)">${sub}</div>`:''}
+            </div>
+            <span style="font-family:'DM Serif Display',serif;font-size:15px;color:${color};flex-shrink:0">${fmt(parseFloat(r.amount))}</span>
+          </div>`;
+        }).join('')}
+      </div>`;
+    }
+
+    const totalHtml=`<div style="background:var(--chip-sel-bg);border:1px solid var(--bal-border);border-radius:14px;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <span style="font-size:12px;color:var(--muted)">${matches.length} résultat(s)</span>
+      <span style="font-size:13px;font-weight:600;color:var(--accent)">${fmt(totalInc)} entrées · ${fmt(totalExp)} sorties</span>
+    </div>`;
+
+    results.innerHTML=totalHtml+renderGroup(incomes,'var(--income-fix)','Entrées',totalInc)+renderGroup(expenses,'var(--expense-fix)','Sorties',totalExp);
+  }catch(e){
+    results.innerHTML='<div class="empty-state">Erreur de recherche</div>';
+  }
+}
+
+/* ══════════════════════════════════════
    SECTIONS REPLIABLES
 ══════════════════════════════════════ */
 let collapsedSections=JSON.parse(localStorage.getItem('collapsedSections')||'{"IF":true,"EF":true,"ID":true,"ED":true}');
@@ -1338,7 +1451,52 @@ buildMonthSelect();
 loadMonth();
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')loadMonth();});
 </script>
-<!-- ══════════════════ MODAL SAUVEGARDES ══════════════════ -->
+<!-- ══════════════════ MODAL RECHERCHE ══════════════════ -->
+<div class="modal-overlay" id="searchModalOverlay" onclick="if(event.target===this)closeSearchModal()">
+  <div class="modal" style="max-height:92dvh">
+    <div class="modal-handle"></div>
+    <div class="modal-title" style="font-size:20px">🔍 Recherche</div>
+
+    <!-- Champ recherche -->
+    <div class="modal-field">
+      <label>Mot-clé (libellé ou précision)</label>
+      <input type="text" id="searchInput" placeholder="ex: Carrefour, EDF, Amazon…" autocomplete="off" autocorrect="off"
+        oninput="runSearch()" style="font-size:16px">
+    </div>
+
+    <!-- Période -->
+    <div class="field-label">Période</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px" id="periodBtns">
+      <button onclick="setSearchPeriod('month')"  class="period-chip active" id="schip-month">Mois courant</button>
+      <button onclick="setSearchPeriod('3m')"     class="period-chip" id="schip-3m">3 mois</button>
+      <button onclick="setSearchPeriod('6m')"     class="period-chip" id="schip-6m">6 mois</button>
+      <button onclick="setSearchPeriod('year')"   class="period-chip" id="schip-year">Année en cours</button>
+      <button onclick="setSearchPeriod('all')"    class="period-chip" id="schip-all">Tout</button>
+      <button onclick="setSearchPeriod('custom')" class="period-chip" id="schip-custom">📅 Personnalisé</button>
+    </div>
+
+    <!-- Dates custom -->
+    <div id="customDatesRow" style="display:none;gap:8px;margin-bottom:14px">
+      <div class="modal-field" style="flex:1;margin-bottom:0">
+        <label>Du</label>
+        <input type="month" id="searchDateFrom" oninput="runSearch()" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:13px;padding:13px 15px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:16px;outline:none;color-scheme:var(--input-scheme)">
+      </div>
+      <div class="modal-field" style="flex:1;margin-bottom:0">
+        <label>Au</label>
+        <input type="month" id="searchDateTo" oninput="runSearch()" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:13px;padding:13px 15px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:16px;outline:none;color-scheme:var(--input-scheme)">
+      </div>
+    </div>
+
+    <!-- Résultats -->
+    <div id="searchResults" style="display:flex;flex-direction:column;gap:10px">
+      <div class="empty-state">Saisissez un mot-clé pour rechercher</div>
+    </div>
+
+    <button class="modal-cancel" onclick="closeSearchModal()" style="margin-top:16px">Fermer</button>
+  </div>
+</div>
+
+
 <div class="modal-overlay" id="backupModalOverlay" onclick="if(event.target===this)closeBackupModal()">
   <div class="modal" style="max-height:85dvh">
     <div class="modal-handle"></div>
